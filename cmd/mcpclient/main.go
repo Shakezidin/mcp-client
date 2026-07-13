@@ -86,6 +86,13 @@ func main() {
 			continue
 		}
 
+		headers, err := promptHeaders()
+		if err != nil {
+			log.Fatalf("failed to parse headers: %v", err)
+		}
+
+		args["headers"] = headers
+
 		result, err := client.CallTool(ctx, toolName, args)
 		if err != nil {
 			fmt.Printf("tool call failed: %v\n", err)
@@ -108,6 +115,36 @@ func prompt(reader *bufio.Reader, message string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(text), nil
+}
+
+func promptHeaders() (http.Header, error) {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("Enter headers as comma-separated Name: Value pairs, or press Enter to skip:")
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	return parseHeaders(strings.TrimSpace(line))
+}
+
+func parseHeaders(raw string) (http.Header, error) {
+	headers := http.Header{}
+	if strings.TrimSpace(raw) == "" {
+		return headers, nil
+	}
+	for _, part := range strings.Split(raw, ",") {
+		pair := strings.SplitN(strings.TrimSpace(part), ":", 2)
+		if len(pair) != 2 {
+			return nil, fmt.Errorf("invalid header %q", part)
+		}
+		name := strings.TrimSpace(pair[0])
+		value := strings.TrimSpace(pair[1])
+		if name == "" {
+			return nil, fmt.Errorf("empty header name in %q", part)
+		}
+		headers.Add(name, value)
+	}
+	return headers, nil
 }
 
 func printResult(result *mcpclient.ToolCallResult) {

@@ -4,9 +4,10 @@ import (
 	"net/http"
 	"time"
 
+	"log/slog"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/trace"
-	"log/slog"
 )
 
 // Config holds the reusable MCP client configuration.

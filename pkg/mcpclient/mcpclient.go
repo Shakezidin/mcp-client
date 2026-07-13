@@ -86,14 +86,6 @@ func (c *Client) logTransactionEvent(ctx context.Context, event TransactionEvent
 	}
 }
 
-func (c *Client) SetHTTPHeaders(headers http.Header) {
-	if headers == nil {
-		c.cfg.HTTPHeaders = nil
-		return
-	}
-	c.cfg.HTTPHeaders = headers.Clone()
-}
-
 func (c *Client) Connect(ctx context.Context) error {
 	if c.session != nil {
 		return nil
