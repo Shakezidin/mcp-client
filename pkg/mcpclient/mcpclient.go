@@ -13,6 +13,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/npire37/aib-mcp-client/pkg/mcpclient/internal/transport"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	log "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -106,7 +109,8 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.cfg.HTTPClient.Transport = transport.NewHeaderRoundTripper(baseTransport, c.cfg.HTTPHeaders.Clone())
 	}
 
-	c.logf("connecting to MCP endpoint", "endpoint", c.cfg.Endpoint)
+	recordConnectionAttempt(ctx, c.cfg.Endpoint)
+	emitInfo(ctx, "connecting to MCP endpoint", log.String("mcp.endpoint", c.cfg.Endpoint))
 
 	c.client = mcp.NewClient(&mcp.Implementation{
 		Name:    c.cfg.ClientName,
@@ -122,10 +126,15 @@ func (c *Client) Connect(ctx context.Context) error {
 	session, err := c.client.Connect(ctx, c.transport, nil)
 	if err != nil {
 		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		recordConnectionError(ctx, c.cfg.Endpoint)
+		emitError(ctx, "failed to connect to MCP endpoint", err, log.String("mcp.endpoint", c.cfg.Endpoint))
 		return fmt.Errorf("connect mcp session: %w", err)
 	}
 
 	c.session = session
+	span.SetStatus(codes.Ok, "connected")
+	emitInfo(ctx, "connected to MCP endpoint", log.String("mcp.endpoint", c.cfg.Endpoint))
 	c.logTransactionEvent(ctx, TransactionEvent{
 		Operation: "connect",
 	})
@@ -159,6 +168,7 @@ func (c *Client) RefreshTools(ctx context.Context) ([]*ToolDescriptor, error) {
 		return nil, err
 	}
 	ctx, span := c.tracer().Start(ctx, "mcpclient.RefreshTools")
+	span.SetAttributes(attribute.String("mcp.endpoint", c.cfg.Endpoint))
 	defer span.End()
 
 	result, err := c.session.ListTools(ctx, &mcp.ListToolsParams{})
@@ -219,7 +229,12 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	if err := c.ensureConnected(); err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	ctx, span := c.tracer().Start(ctx, "mcpclient.CallTool")
+	span.SetAttributes(
+		attribute.String("mcp.endpoint", c.cfg.Endpoint),
+		attribute.String("mcp.tool.name", name),
+	)
 	defer span.End()
 
 	result, err := c.session.CallTool(ctx, &mcp.CallToolParams{
@@ -228,6 +243,12 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	})
 	if err != nil {
 		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		recordToolCall(ctx, name, "failure", time.Since(start), err)
+		emitError(ctx, "tool invocation failed", err,
+			log.String("mcp.endpoint", c.cfg.Endpoint),
+			log.String("mcp.tool.name", name),
+		)
 		c.logTransactionEvent(ctx, TransactionEvent{
 			Operation: "call_tool",
 			ToolName:  name,
@@ -243,6 +264,12 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 		StructuredContent: result.StructuredContent,
 		RawResponse:       result,
 	}
+	span.SetStatus(codes.Ok, "tool call succeeded")
+	recordToolCall(ctx, name, "success", time.Since(start), nil)
+	emitInfo(ctx, "tool invocation succeeded",
+		log.String("mcp.endpoint", c.cfg.Endpoint),
+		log.String("mcp.tool.name", name),
+	)
 	c.logTransactionEvent(ctx, TransactionEvent{
 		Operation: "call_tool",
 		ToolName:  name,

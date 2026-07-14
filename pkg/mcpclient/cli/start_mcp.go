@@ -14,6 +14,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/npire37/aib-mcp-client/pkg/mcpclient"
+	logapi "go.opentelemetry.io/otel/log"
+	logglobal "go.opentelemetry.io/otel/log/global"
 )
 
 // StartInteractiveClient runs an interactive REPL for invoking MCP tools.
@@ -21,19 +23,23 @@ import (
 func StartInteractiveClient(ctx context.Context, endpoint string) {
 	client, err := newConnectedClient(ctx, endpoint)
 	if err != nil {
+		emitCliError(ctx, "failed to start MCP client", err, endpoint)
 		log.Fatalf("failed to start MCP client: %v", err)
 	}
 	defer func() {
 		if err := client.Close(); err != nil {
+			emitCliError(ctx, "failed to close MCP client", err, endpoint)
 			log.Printf("failed to close MCP client: %v", err)
 		}
 	}()
 
 	if err := printToolList(ctx, client, endpoint); err != nil {
+		emitCliError(ctx, "failed to list tools", err, endpoint)
 		log.Fatalf("failed to list tools: %v", err)
 	}
 
-	if err := interactiveREPL(ctx, client); err != nil {
+	if err := interactiveREPL(ctx, client, endpoint); err != nil {
+		emitCliError(ctx, "interactive loop failed", err, endpoint)
 		log.Fatalf("interactive loop failed: %v", err)
 	}
 }
@@ -71,7 +77,7 @@ func printToolList(ctx context.Context, client *mcpclient.Client, endpoint strin
 }
 
 // interactiveREPL runs a simple read-eval-print loop for invoking tools.
-func interactiveREPL(ctx context.Context, client *mcpclient.Client) error {
+func interactiveREPL(ctx context.Context, client *mcpclient.Client, endpoint string) error {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		toolName, err := readToolName(reader)
@@ -88,12 +94,14 @@ func interactiveREPL(ctx context.Context, client *mcpclient.Client) error {
 
 		args, err := readJSONArgs(reader, toolName)
 		if err != nil {
+			emitCliError(ctx, "invalid tool arguments", err, endpoint, logapi.String("tool.name", toolName))
 			log.Printf("invalid args: %v", err)
 			continue
 		}
 
 		headers, err := readHeaders(reader)
 		if err != nil {
+			emitCliError(ctx, "failed to read headers", err, endpoint, logapi.String("tool.name", toolName))
 			log.Printf("failed to read headers: %v", err)
 			continue
 		}
@@ -105,6 +113,7 @@ func interactiveREPL(ctx context.Context, client *mcpclient.Client) error {
 		args["headers"] = headers
 
 		if err := callToolAndPrint(ctx, client, toolName, args); err != nil {
+			emitCliError(ctx, "tool call failed", err, endpoint, logapi.String("tool.name", toolName))
 			log.Printf("tool call failed: %v", err)
 		}
 	}
@@ -193,8 +202,10 @@ func callToolAndPrint(ctx context.Context, client *mcpclient.Client, toolName st
 		return err
 	}
 	if result.IsError {
+		emitCliError(ctx, "tool returned error result", nil, "", logapi.String("tool.name", toolName))
 		fmt.Println("tool returned an error")
 	} else {
+		emitCliInfo(ctx, "tool call succeeded", logapi.String("tool.name", toolName))
 		fmt.Println("tool call succeeded")
 	}
 	printToolResult(result)
@@ -216,4 +227,40 @@ func printToolResult(result *mcpclient.ToolCallResult) {
 	if result.StructuredContent != nil {
 		fmt.Printf("structured content: %#v\n", result.StructuredContent)
 	}
+}
+
+func cliLogger() logapi.Logger {
+	return logglobal.Logger("github.com/npire37/aib-mcp-client/cli")
+}
+
+func emitCliInfo(ctx context.Context, message string, attrs ...logapi.KeyValue) {
+	logger := cliLogger()
+	record := logapi.Record{}
+	record.SetTimestamp(time.Now())
+	record.SetSeverity(logapi.SeverityInfo)
+	record.SetSeverityText(logapi.SeverityInfo.String())
+	record.SetBody(logapi.StringValue(message))
+	if len(attrs) > 0 {
+		record.AddAttributes(attrs...)
+	}
+	logger.Emit(ctx, record)
+}
+
+func emitCliError(ctx context.Context, message string, err error, endpoint string, attrs ...logapi.KeyValue) {
+	logger := cliLogger()
+	record := logapi.Record{}
+	record.SetTimestamp(time.Now())
+	record.SetSeverity(logapi.SeverityError)
+	record.SetSeverityText(logapi.SeverityError.String())
+	record.SetBody(logapi.StringValue(message))
+	if err != nil {
+		record.SetErr(err)
+	}
+	if endpoint != "" {
+		record.AddAttributes(logapi.String("mcp.endpoint", endpoint))
+	}
+	if len(attrs) > 0 {
+		record.AddAttributes(attrs...)
+	}
+	logger.Emit(ctx, record)
 }
