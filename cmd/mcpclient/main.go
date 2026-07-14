@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
-	"github.com/npire37/aib-mcp-client/pkg/mcpclient"
 	"github.com/npire37/aib-mcp-client/pkg/mcpclient/cli"
 	"github.com/npire37/aib-mcp-client/pkg/observability"
 )
@@ -44,21 +42,6 @@ func main() {
 			panic(err)
 		}
 	}()
-
-	client, err := mcpclient.New(mcpclient.Config{
-		Endpoint:      endpoint,
-		ClientName:    "aib-mcp-client",
-		ClientVersion: "v1.0.0",
-		KeepAlive:     30 * time.Second,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	if err := client.Connect(ctx); err != nil {
-		panic(err)
-	}
-	defer client.Close()
 
 	cli.StartInteractiveClient(ctx, endpoint)
 }
