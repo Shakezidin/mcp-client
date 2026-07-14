@@ -1,8 +1,19 @@
-package mcpclient
+package transport
 
 import (
 	"net/http"
 )
+
+// NewHeaderRoundTripper returns an http.RoundTripper that injects configured headers into every outgoing request.
+func NewHeaderRoundTripper(base http.RoundTripper, headers http.Header) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return &headerRoundTripper{
+		base:    base,
+		headers: headers,
+	}
+}
 
 // headerRoundTripper injects configured headers into every outgoing request.
 type headerRoundTripper struct {

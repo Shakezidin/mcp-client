@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/npire37/aib-mcp-client/pkg/mcpclient/internal/transport"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -98,14 +99,11 @@ func (c *Client) Connect(ctx context.Context) error {
 		c.cfg.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	if len(c.cfg.HTTPHeaders) > 0 {
-		transport := c.cfg.HTTPClient.Transport
-		if transport == nil {
-			transport = http.DefaultTransport
+		baseTransport := c.cfg.HTTPClient.Transport
+		if baseTransport == nil {
+			baseTransport = http.DefaultTransport
 		}
-		c.cfg.HTTPClient.Transport = &headerRoundTripper{
-			base:    transport,
-			headers: c.cfg.HTTPHeaders.Clone(),
-		}
+		c.cfg.HTTPClient.Transport = transport.NewHeaderRoundTripper(baseTransport, c.cfg.HTTPHeaders.Clone())
 	}
 
 	c.logf("connecting to MCP endpoint", "endpoint", c.cfg.Endpoint)
