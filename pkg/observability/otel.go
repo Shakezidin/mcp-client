@@ -2,8 +2,12 @@ package observability
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
+	"os"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -18,6 +22,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Config defines OpenTelemetry settings for the MCP client.
@@ -56,18 +64,25 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 		return nil, err
 	}
 
-	endpoint := cfg.Endpoint
-	if endpoint == "" {
-		endpoint = "localhost"
-	}
-	endpoint = fmt.Sprintf("%s:%d", endpoint, cfg.OTLPPort)
+	endpoint := resolveEndpoint(cfg.Endpoint, cfg.OTLPPort)
+	traceDialOpts := buildOTLPDialOptions(cfg.Insecure)
 
-	traceExporter, err := otlptracegrpc.New(ctx,
+	if err := waitForCollector(endpoint, 2*time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, "otel collector unavailable at %s; falling back to no-op telemetry: %v\n", endpoint, err)
+		return setupNoopTelemetry(ctx, res)
+	}
+
+	traceExporterOpts := []otlptracegrpc.Option{
 		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(),
-	)
+		otlptracegrpc.WithDialOption(traceDialOpts...),
+	}
+	if cfg.Insecure {
+		traceExporterOpts = append(traceExporterOpts, otlptracegrpc.WithInsecure())
+	}
+
+	traceExporter, err := otlptracegrpc.New(ctx, traceExporterOpts...)
 	if err != nil {
-		return nil, err
+		return setupNoopTelemetry(ctx, res)
 	}
 
 	traceProvider := sdktrace.NewTracerProvider(
@@ -76,12 +91,17 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 	)
 	otel.SetTracerProvider(traceProvider)
 
-	metricExporter, err := otlpmetricgrpc.New(ctx,
+	metricExporterOpts := []otlpmetricgrpc.Option{
 		otlpmetricgrpc.WithEndpoint(endpoint),
-		otlpmetricgrpc.WithInsecure(),
-	)
+		otlpmetricgrpc.WithDialOption(traceDialOpts...),
+	}
+	if cfg.Insecure {
+		metricExporterOpts = append(metricExporterOpts, otlpmetricgrpc.WithInsecure())
+	}
+
+	metricExporter, err := otlpmetricgrpc.New(ctx, metricExporterOpts...)
 	if err != nil {
-		return nil, err
+		return setupNoopTelemetry(ctx, res)
 	}
 
 	meterProvider := sdkmetric.NewMeterProvider(
@@ -92,12 +112,17 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 	)
 	otel.SetMeterProvider(meterProvider)
 
-	logExporter, err := otlploggrpc.New(ctx,
+	logExporterOpts := []otlploggrpc.Option{
 		otlploggrpc.WithEndpoint(endpoint),
-		otlploggrpc.WithInsecure(),
-	)
+		otlploggrpc.WithDialOption(traceDialOpts...),
+	}
+	if cfg.Insecure {
+		logExporterOpts = append(logExporterOpts, otlploggrpc.WithInsecure())
+	}
+
+	logExporter, err := otlploggrpc.New(ctx, logExporterOpts...)
 	if err != nil {
-		return nil, err
+		return setupNoopTelemetry(ctx, res)
 	}
 
 	logProvider := sdklog.NewLoggerProvider(
@@ -119,5 +144,57 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 		propagation.Baggage{},
 	))
 
+	return shutdown, nil
+}
+
+func resolveEndpoint(endpoint string, port int) string {
+	if endpoint == "" {
+		return fmt.Sprintf("localhost:%d", port)
+	}
+
+	if strings.Contains(endpoint, ":") {
+		if _, _, err := net.SplitHostPort(endpoint); err == nil {
+			return endpoint
+		}
+	}
+
+	return fmt.Sprintf("%s:%d", endpoint, port)
+}
+
+func buildOTLPDialOptions(insecureTransport bool) []grpc.DialOption {
+	if insecureTransport {
+		return []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+		}
+	}
+
+	return []grpc.DialOption{
+		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})),
+		grpc.WithBlock(),
+	}
+}
+
+func waitForCollector(endpoint string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", endpoint, timeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+func setupNoopTelemetry(ctx context.Context, res *resource.Resource) (func(context.Context) error, error) {
+	otel.SetTracerProvider(trace.NewNoopTracerProvider())
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider())
+	global.SetLoggerProvider(sdklog.NewLoggerProvider())
+
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	shutdown := func(ctx context.Context) error {
+		return nil
+	}
 	return shutdown, nil
 }

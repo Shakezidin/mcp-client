@@ -6,6 +6,8 @@ services:
     image: grafana/grafana:latest
     ports:
       - "3000:3000"
+    networks:
+      - monitoring
 
   prometheus:
     image: prom/prometheus
@@ -13,16 +15,22 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - monitoring
 
   loki:
     image: grafana/loki:latest
     ports:
       - "3100:3100"
+    networks:
+      - monitoring
 
   tempo:
     image: grafana/tempo:latest
     ports:
-      - "3200:3200"
+      - "3200:3200"      # This is the HTTP API port Grafana is looking for
+    networks:
+      - monitoring
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -34,3 +42,9 @@ services:
       - "4317:4317"
       - "4318:4318"
       - "8889:8889"
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: bridge
